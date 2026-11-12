@@ -11,37 +11,25 @@ Acceso solo con Google y solo para los correos autorizados.
 - Saldo en vivo, devoluciones ("saldar"), historial con filtros por mes, categoría y persona.
 - Categorías editables. Funciona en celular y computador, instalable como app.
 
-## Desarrollo local
+## Despliegue (todo desde el navegador, sin correr nada local)
+Cloudflare Workers Builds construye y despliega automáticamente cada push a la rama de producción (`main`).
+
+1. **Cliente OAuth de Google** (gratis): tipo *Aplicación web*, con la URL del Worker como origen de JavaScript autorizado.
+2. **Base de datos:** en <https://dash.cloudflare.com> → *Storage & databases → D1 → Create database*, nombre `super-splid`. Copia su ID a `wrangler.jsonc` (`database_id`).
+3. **Worker:** *Workers & Pages → Create → Import a repository* → elige este repo y la rama `main`. Nombre: `super-splid`.
+   - Build command: `npm run build`
+   - Deploy command: `npx wrangler d1 migrations apply super-splid --remote && npx wrangler deploy`
+4. **Secretos:** en el Worker → *Settings → Variables and secrets* agrega (tipo *Secret*): `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS` (`a@gmail.com,b@gmail.com`) y `SESSION_SECRET` (cualquier texto aleatorio largo).
+5. Agrega la URL `https://super-splid.<subdominio>.workers.dev` a los orígenes autorizados del cliente OAuth de Google.
+
+Cada cambio nuevo en `main` se despliega solo, y las migraciones nuevas se aplican en ese mismo paso.
+
+## Desarrollo local (opcional)
 ```bash
-npm install
-npm run db:migrate:local
-npm run dev            # http://localhost:8787
+npm install && npm run db:migrate:local && npm run dev   # http://localhost:8787
 ```
-Crea un archivo `.dev.vars` (no se sube a git):
-```
-GOOGLE_CLIENT_ID=dev
-ALLOWED_EMAILS=tu@gmail.com,roomie@gmail.com
-SESSION_SECRET=cualquier-cosa-larga
-DEV_AUTH=1
-```
-Con `DEV_AUTH=1` aparece un login por correo solo para desarrollo. **Nunca** lo definas en producción.
+Requiere un `.dev.vars` con `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `SESSION_SECRET` y `DEV_AUTH=1` (login de desarrollo; nunca en producción).
 Tests: `npm test` · Tipos: `npm run typecheck`.
-
-## Despliegue (una sola vez)
-1. **Cliente OAuth de Google** (gratis): en <https://console.cloud.google.com/apis/credentials> crea un proyecto → "Crear credenciales" → "ID de cliente de OAuth" → tipo *Aplicación web*.
-   En *Orígenes de JavaScript autorizados* agrega la URL final (`https://super-splid.<tu-subdominio>.workers.dev`) y `http://localhost:8787`. Si te pide pantalla de consentimiento, elige *Externo* y agrega a los dos como usuarios de prueba (o publícala; solo usa el login básico).
-2. `npx wrangler login`
-3. `npx wrangler d1 create super-splid` y copia el `database_id` que imprime a `wrangler.jsonc`.
-4. `npm run db:migrate:remote`
-5. Secretos (cada comando pide el valor):
-   ```bash
-   npx wrangler secret put GOOGLE_CLIENT_ID
-   npx wrangler secret put ALLOWED_EMAILS     # a@gmail.com,b@gmail.com
-   npx wrangler secret put SESSION_SECRET     # ej: salida de `openssl rand -hex 32`
-   ```
-6. `npm run deploy`
-
-Para actualizar después: `npm run deploy`. Si agregamos migraciones: `npm run db:migrate:remote` primero.
 
 ## Modelo de datos
 Montos en centavos (enteros). `expenses` + `expense_splits` (cuánto consume cada uno) + `settlements` (devoluciones).
