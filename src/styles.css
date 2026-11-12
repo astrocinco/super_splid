@@ -47,3 +47,4 @@ details.card { margin-top: 16px; } summary { cursor: pointer; color: var(--muted
 .login { max-width: 360px; margin: 0 auto; padding: 18vh 20px; text-align: center; }
 .login h1 { font-size: 2rem; } .gbtn { display: flex; justify-content: center; margin: 24px 0; min-height: 44px; }
 .devlogin { display: flex; flex-direction: column; gap: 6px; margin-top: 24px; }
+.actions .grow { flex: 1; }
