@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "super-splid",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "43755f4f-7d97-4b9e-a88a-719f8eb60f78",
       "migrations_dir": "migrations"
     }
   ]
