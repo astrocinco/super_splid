@@ -54,6 +54,13 @@ export default function ExpenseForm({ data, me, expense, onClose, onSaved }: {
     } catch (e: any) { setErr(e.message); setBusy(false); }
   }
 
+  async function remove() {
+    if (!expense || !confirm(`¿Borrar "${expense.description}"? Esto cambia el saldo y no se puede deshacer.`)) return;
+    setBusy(true); setErr("");
+    try { await api.deleteExpense(expense.id); onSaved(); }
+    catch (e: any) { setErr(e.message); setBusy(false); }
+  }
+
   return (
     <div className="sheet-bg" onClick={onClose}>
       <form className="sheet" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
@@ -86,6 +93,8 @@ export default function ExpenseForm({ data, me, expense, onClose, onSaved }: {
         </fieldset>
         {err && <p className="error">{err}</p>}
         <div className="row actions">
+          {expense && <button type="button" className="btn danger" disabled={busy} onClick={remove}>Borrar</button>}
+          <span className="grow" />
           <button type="button" className="btn ghost" onClick={onClose}>Cancelar</button>
           <button className="btn" disabled={busy}>{busy ? "Guardando…" : "Guardar"}</button>
         </div>
