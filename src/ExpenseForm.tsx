@@ -16,16 +16,21 @@ function initialMode(e: Expense | undefined, otherId: number): { mode: Mode; pct
   return { mode: "custom", pct: String(Math.round(pct * 100) / 100) };
 }
 
-export default function ExpenseForm({ data, me, expense, onClose, onSaved }: {
-  data: AppData; me: User; expense?: Expense; onClose: () => void; onSaved: () => void;
+export interface Prefill {
+  description: string; amount_cents: number; date: string; category_id: number | null;
+  invoice_provider?: string | null; invoice_number?: string | null;
+}
+
+export default function ExpenseForm({ data, me, expense, prefill, notice, pendingId, onClose, onSaved }: {
+  data: AppData; me: User; expense?: Expense; prefill?: Prefill; notice?: string; pendingId?: number; onClose: () => void; onSaved: () => void;
 }) {
   const [payerId, setPayerId] = useState(expense?.payer_id ?? me.id);
   const other = data.users.find((u) => u.id !== payerId)!;
   const init = initialMode(expense, other.id);
-  const [desc, setDesc] = useState(expense?.description ?? "");
-  const [amount, setAmount] = useState(expense ? String(expense.amount_cents / 100).replace(".", ",") : "");
-  const [date, setDate] = useState(expense?.date ?? today());
-  const [cat, setCat] = useState<number | "">(expense?.category_id ?? "");
+  const [desc, setDesc] = useState(expense?.description ?? prefill?.description ?? "");
+  const [amount, setAmount] = useState(expense ? String(expense.amount_cents / 100).replace(".", ",") : prefill ? String(prefill.amount_cents / 100).replace(".", ",") : "");
+  const [date, setDate] = useState(expense?.date ?? prefill?.date ?? today());
+  const [cat, setCat] = useState<number | "">(expense?.category_id ?? prefill?.category_id ?? "");
   const [mode, setMode] = useState<Mode>(init.mode);
   const [pct, setPct] = useState(init.pct);
   const [err, setErr] = useState("");
@@ -49,6 +54,8 @@ export default function ExpenseForm({ data, me, expense, onClose, onSaved }: {
       await api.saveExpense(expense?.id ?? null, {
         date, description: desc, amount_cents: cents, category_id: cat === "" ? null : cat,
         payer_id: payerId, splits: splitTwoWays(cents, payerId, other.id, otherPct),
+        ...(!expense && prefill ? { invoice_provider: prefill.invoice_provider, invoice_number: prefill.invoice_number } : {}),
+        ...(!expense && pendingId ? { pending_id: pendingId } : {}),
       });
       onSaved();
     } catch (e: any) { setErr(e.message); setBusy(false); }
@@ -65,6 +72,7 @@ export default function ExpenseForm({ data, me, expense, onClose, onSaved }: {
     <div className="sheet-bg" onClick={onClose}>
       <form className="sheet" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <h2>{expense ? "Editar gasto" : "Nuevo gasto"}</h2>
+        {notice && <p className="notice">{notice}</p>}
         <label>Descripción<input autoFocus value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Ej: Supermercado" /></label>
         <div className="row">
           <label>Monto (ARS)<input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,00" /></label>

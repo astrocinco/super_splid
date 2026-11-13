@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import Login from "./Login";
-import ExpenseForm from "./ExpenseForm";
+import ExpenseForm, { type Prefill } from "./ExpenseForm";
 import SettleForm from "./SettleForm";
 import { computeBalances, pairwiseDebt } from "../shared/balance";
 import { formatARS } from "../shared/money";
-import type { AppData, Expense, Settlement, User } from "../shared/types";
+import { invoiceToPrefill, parseInvoiceText } from "../shared/invoices";
+import { findDuplicate } from "../shared/dedupe";
+import type { AppData, Expense, PendingInvoice, Settlement, User } from "../shared/types";
 
 type Tab = "home" | "history" | "settings";
 type Item = { kind: "e"; date: string; id: number; e: Expense } | { kind: "s"; date: string; id: number; s: Settlement };
@@ -21,7 +23,7 @@ export default function App() {
 function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
   const [data, setData] = useState<AppData | null>(null);
   const [tab, setTab] = useState<Tab>("home");
-  const [form, setForm] = useState<{ expense?: Expense } | null>(null);
+  const [form, setForm] = useState<{ expense?: Expense; prefill?: Prefill; notice?: string; pendingId?: number } | null>(null);
   const [settle, setSettle] = useState<{ from: number; to: number; cents: number } | null>(null);
   const [error, setError] = useState("");
 
@@ -35,7 +37,7 @@ function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
     <div className="app">
       <header><h1>💸 Gastos</h1></header>
       <main>
-        {tab === "home" && <Home data={data} me={me} onSettle={setSettle} onEdit={(e) => setForm({ expense: e })} onAll={() => setTab("history")} />}
+        {tab === "home" && <Home data={data} me={me} onInvoice={setForm} onPending={setForm} onChanged={reload} onSettle={setSettle} onEdit={(e) => setForm({ expense: e })} onAll={() => setTab("history")} />}
         {tab === "history" && <History data={data} me={me} onEdit={(e) => setForm({ expense: e })} onChanged={reload} />}
         {tab === "settings" && <Settings data={data} me={me} onChanged={reload} onLogout={onLogout} />}
       </main>
@@ -45,7 +47,7 @@ function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
         <button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>📜<span>Historial</span></button>
         <button className={tab === "settings" ? "on" : ""} onClick={() => setTab("settings")}>⚙️<span>Ajustes</span></button>
       </nav>
-      {form && <ExpenseForm data={data} me={me} expense={form.expense} onClose={() => setForm(null)} onSaved={done} />}
+      {form && <ExpenseForm data={data} me={me} expense={form.expense} prefill={form.prefill} notice={form.notice} pendingId={form.pendingId} onClose={() => setForm(null)} onSaved={done} />}
       {settle && <SettleForm data={data} fromId={settle.from} toId={settle.to} cents={settle.cents} onClose={() => setSettle(null)} onSaved={done} />}
     </div>
   );
@@ -54,8 +56,91 @@ function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
 const nameOf = (data: AppData, me: User, id: number) => (id === me.id ? "Tú" : data.users.find((u) => u.id === id)?.name ?? "?");
 const fmtDate = (d: string) => new Date(d + "T12:00:00").toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" });
 
-function Home({ data, me, onSettle, onEdit, onAll }: {
-  data: AppData; me: User; onSettle: (s: { from: number; to: number; cents: number }) => void;
+function InvoiceUpload({ data, onParsed }: { data: AppData; onParsed: (f: { prefill: Prefill; notice: string; pendingId?: number }) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function onFile(file: File) {
+    setBusy(true); setErr("");
+    try {
+      const { extractPdfText } = await import("./pdfText");
+      const result = parseInvoiceText(await extractPdfText(await file.arrayBuffer()));
+      if (!result.ok) { setErr(result.error); return; }
+      const inv = result.invoice;
+      const today = new Date().toLocaleDateString("sv-SE");
+      const base = invoiceToPrefill(inv, today);
+      const cat = data.categories.find((c) => c.name.toLowerCase() === "servicios");
+      const dup = findDuplicate(
+        { provider: inv.provider, invoice_number: inv.invoice_number, total_cents: inv.total_cents, date: base.date },
+        data.expenses, today);
+      // ¿Esta factura ya había llegado por correo? Al guardar se marca como confirmada en vez de duplicarse.
+      const inbox = findDuplicate(
+        { provider: inv.provider, invoice_number: inv.invoice_number, total_cents: inv.total_cents, date: base.date },
+        data.pending.map((p) => ({ id: p.id, invoice_provider: p.provider, invoice_number: p.invoice_number, amount_cents: p.total_cents, date: p.issue_date })), today);
+      const missingDate = !inv.issue_date && !inv.due_date;
+      onParsed({
+        pendingId: inbox?.expense.id,
+        prefill: { ...base, category_id: cat?.id ?? null },
+        notice: `Leído de la factura de ${inv.providerName}. Revisa los datos antes de guardar.`
+          + (inv.due_date ? ` Vence el ${inv.due_date.split("-").reverse().join("/")}.` : "")
+          + (missingDate ? " No encontré la fecha: puse la de hoy." : "")
+          + (inbox ? " 📬 Esta factura ya había llegado por correo: al guardar se marcará como confirmada." : "")
+          + (dup?.level === "exact" ? ` ⛔ Esta factura ya está cargada ("${dup.expense.description}", ${dup.expense.date.split("-").reverse().join("/")}). No se puede guardar dos veces.` : "")
+          + (dup?.level === "likely" ? ` ⚠️ Parece la misma que "${dup.expense.description}" del ${dup.expense.date.split("-").reverse().join("/")} (mismo proveedor y monto). Si ya la cargaste, cancela.` : ""),
+      });
+    } catch { setErr("No pude leer ese PDF. ¿Es una factura en PDF con texto (no una foto)?"); }
+    finally { setBusy(false); }
+  }
+  return (
+    <>
+      <label className="btn ghost upload">
+        {busy ? "Leyendo factura…" : "📄 Subir factura (PDF)"}
+        <input type="file" accept="application/pdf" hidden disabled={busy}
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onFile(f); }} />
+      </label>
+      {err && <p className="error">{err}</p>}
+    </>
+  );
+}
+
+function PendingList({ data, onOpen, onChanged }: {
+  data: AppData; onOpen: (f: { prefill: Prefill; notice: string; pendingId: number }) => void; onChanged: () => void;
+}) {
+  if (!data.pending.length) return null;
+  const today = new Date().toLocaleDateString("sv-SE");
+  const cat = data.categories.find((c) => c.name.toLowerCase() === "servicios");
+  const open = (p: PendingInvoice) => onOpen({
+    pendingId: p.id,
+    prefill: { description: `${p.provider_name} (${p.kind_name})`, amount_cents: p.total_cents, date: p.issue_date,
+      category_id: cat?.id ?? null, invoice_provider: p.provider, invoice_number: p.invoice_number },
+    notice: `Llegó por correo de ${p.provider_name}. Revisa los datos antes de guardar.`
+      + (p.due_date ? ` Vence el ${p.due_date.split("-").reverse().join("/")}.` : ""),
+  });
+  return (
+    <>
+      <h2>📬 Facturas por confirmar ({data.pending.length})</h2>
+      <ul className="list">
+        {data.pending.map((p) => {
+          const dup = findDuplicate({ provider: p.provider, invoice_number: p.invoice_number, total_cents: p.total_cents, date: p.issue_date }, data.expenses, today);
+          return (
+            <li key={p.id} className="item pend">
+              <b>{p.provider_name} ({p.kind_name})</b>
+              <span className="amt">{formatARS(p.total_cents)}</span>
+              <small>{p.due_date ? `vence ${p.due_date.split("-").reverse().join("/")}` : fmtDate(p.issue_date)}{dup ? " · ⚠️ parece repetida" : ""}</small>
+              <span className="acts">
+                <button className="btn small" onClick={() => open(p)}>Revisar</button>
+                <button className="btn danger small" aria-label="Descartar" onClick={async () => { if (confirm(`¿Descartar la factura de ${p.provider_name}?`)) { await api.dismissPending(p.id); onChanged(); } }}>✕</button>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+function Home({ data, me, onInvoice, onPending, onChanged, onSettle, onEdit, onAll }: {
+  data: AppData; me: User; onInvoice: (f: { prefill: Prefill; notice: string; pendingId?: number }) => void;
+  onPending: (f: { prefill: Prefill; notice: string; pendingId: number }) => void; onChanged: () => void; onSettle: (s: { from: number; to: number; cents: number }) => void;
   onEdit: (e: Expense) => void; onAll: () => void;
 }) {
   const other = data.users.find((u) => u.id !== me.id);
@@ -72,6 +157,8 @@ function Home({ data, me, onSettle, onEdit, onAll }: {
           </>
         )}
       </section>
+      <InvoiceUpload data={data} onParsed={onInvoice} />
+      <PendingList data={data} onOpen={onPending} onChanged={onChanged} />
       <h2>Últimos movimientos</h2>
       <ItemList data={data} me={me} items={items} onEdit={onEdit} />
       {items.length > 0 && <button className="btn ghost" onClick={onAll}>Ver todo el historial</button>}
