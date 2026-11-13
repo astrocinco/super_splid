@@ -107,8 +107,12 @@ async function parseExpense(c: any, userIds: Set<number>) {
     || new Set(splits.map((s: any) => s.user_id)).size !== splits.length || splits.length === 0
     || splits.reduce((a: number, s: any) => a + s.owed_cents, 0) !== b.amount_cents) problems.push("división");
   if (problems.length) return { error: `Datos inválidos: ${problems.join(", ")}` } as const;
+  const provider = typeof b.invoice_provider === "string" && /^[a-z]{2,20}$/.test(b.invoice_provider) ? b.invoice_provider : null;
+  const number = provider && typeof b.invoice_number === "string" && b.invoice_number.trim()
+    ? b.invoice_number.trim().slice(0, 40) : null;
   return {
     value: {
+      invoice_provider: provider, invoice_number: number,
       date: b.date as string, description: (b.description as string).trim().slice(0, 200),
       amount_cents: b.amount_cents as number, category_id: (b.category_id ?? null) as number | null,
       payer_id: b.payer_id as number, splits: splits as { user_id: number; owed_cents: number }[],
@@ -123,8 +127,8 @@ async function writeExpense(db: D1Database, id: number | null, userId: number, v
   const stmts: D1PreparedStatement[] = [];
   if (id === null) {
     stmts.push(db.prepare(
-      "INSERT INTO expenses (date, description, amount_cents, category_id, payer_id, created_by) VALUES (?,?,?,?,?,?)",
-    ).bind(v.date, v.description, v.amount_cents, v.category_id, v.payer_id, userId));
+      "INSERT INTO expenses (date, description, amount_cents, category_id, payer_id, created_by, invoice_provider, invoice_number) VALUES (?,?,?,?,?,?,?,?)",
+    ).bind(v.date, v.description, v.amount_cents, v.category_id, v.payer_id, userId, v.invoice_provider, v.invoice_number));
     const res = await stmts[0].run();
     id = res.meta.last_row_id as number;
     stmts.length = 0;
@@ -144,8 +148,13 @@ async function writeExpense(db: D1Database, id: number | null, userId: number, v
 app.post("/api/expenses", async (c) => {
   const r = await parseExpense(c, await allUserIds(c.env.DB));
   if ("error" in r) return c.json({ error: r.error }, 400);
-  const id = await writeExpense(c.env.DB, null, c.get("user").id, r.value);
-  return c.json({ id }, 201);
+  try {
+    const id = await writeExpense(c.env.DB, null, c.get("user").id, r.value);
+    return c.json({ id }, 201);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) return c.json({ error: "Esta factura ya fue cargada antes (mismo proveedor y número)." }, 409);
+    throw e;
+  }
 });
 
 app.put("/api/expenses/:id", async (c) => {

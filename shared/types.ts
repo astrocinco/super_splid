@@ -4,6 +4,7 @@ export interface Split { user_id: number; owed_cents: number }
 export interface Expense {
   id: number; date: string; description: string; amount_cents: number;
   category_id: number | null; payer_id: number; created_by: number; splits: Split[];
+  invoice_provider?: string | null; invoice_number?: string | null;
 }
 export interface Settlement {
   id: number; date: string; from_user: number; to_user: number;

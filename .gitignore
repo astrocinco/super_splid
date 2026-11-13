@@ -3,3 +3,9 @@ dist
 .wrangler
 .dev.vars
 *.log
+
+# Datos personales: nunca subir facturas ni correos
+*.pdf
+*.eml
+samples/
+private/

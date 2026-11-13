@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import Login from "./Login";
-import ExpenseForm from "./ExpenseForm";
+import ExpenseForm, { type Prefill } from "./ExpenseForm";
 import SettleForm from "./SettleForm";
 import { computeBalances, pairwiseDebt } from "../shared/balance";
 import { formatARS } from "../shared/money";
+import { invoiceToPrefill, parseInvoiceText } from "../shared/invoices";
+import { findDuplicate } from "../shared/dedupe";
 import type { AppData, Expense, Settlement, User } from "../shared/types";
 
 type Tab = "home" | "history" | "settings";
@@ -21,7 +23,7 @@ export default function App() {
 function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
   const [data, setData] = useState<AppData | null>(null);
   const [tab, setTab] = useState<Tab>("home");
-  const [form, setForm] = useState<{ expense?: Expense } | null>(null);
+  const [form, setForm] = useState<{ expense?: Expense; prefill?: Prefill; notice?: string } | null>(null);
   const [settle, setSettle] = useState<{ from: number; to: number; cents: number } | null>(null);
   const [error, setError] = useState("");
 
@@ -35,7 +37,7 @@ function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
     <div className="app">
       <header><h1>💸 Gastos</h1></header>
       <main>
-        {tab === "home" && <Home data={data} me={me} onSettle={setSettle} onEdit={(e) => setForm({ expense: e })} onAll={() => setTab("history")} />}
+        {tab === "home" && <Home data={data} me={me} onInvoice={setForm} onSettle={setSettle} onEdit={(e) => setForm({ expense: e })} onAll={() => setTab("history")} />}
         {tab === "history" && <History data={data} me={me} onEdit={(e) => setForm({ expense: e })} onChanged={reload} />}
         {tab === "settings" && <Settings data={data} me={me} onChanged={reload} onLogout={onLogout} />}
       </main>
@@ -45,7 +47,7 @@ function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
         <button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>📜<span>Historial</span></button>
         <button className={tab === "settings" ? "on" : ""} onClick={() => setTab("settings")}>⚙️<span>Ajustes</span></button>
       </nav>
-      {form && <ExpenseForm data={data} me={me} expense={form.expense} onClose={() => setForm(null)} onSaved={done} />}
+      {form && <ExpenseForm data={data} me={me} expense={form.expense} prefill={form.prefill} notice={form.notice} onClose={() => setForm(null)} onSaved={done} />}
       {settle && <SettleForm data={data} fromId={settle.from} toId={settle.to} cents={settle.cents} onClose={() => setSettle(null)} onSaved={done} />}
     </div>
   );
@@ -54,8 +56,48 @@ function Main({ me, onLogout }: { me: User; onLogout: () => void }) {
 const nameOf = (data: AppData, me: User, id: number) => (id === me.id ? "Tú" : data.users.find((u) => u.id === id)?.name ?? "?");
 const fmtDate = (d: string) => new Date(d + "T12:00:00").toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" });
 
-function Home({ data, me, onSettle, onEdit, onAll }: {
-  data: AppData; me: User; onSettle: (s: { from: number; to: number; cents: number }) => void;
+function InvoiceUpload({ data, onParsed }: { data: AppData; onParsed: (f: { prefill: Prefill; notice: string }) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function onFile(file: File) {
+    setBusy(true); setErr("");
+    try {
+      const { extractPdfText } = await import("./pdfText");
+      const result = parseInvoiceText(await extractPdfText(await file.arrayBuffer()));
+      if (!result.ok) { setErr(result.error); return; }
+      const inv = result.invoice;
+      const today = new Date().toLocaleDateString("sv-SE");
+      const base = invoiceToPrefill(inv, today);
+      const cat = data.categories.find((c) => c.name.toLowerCase() === "servicios");
+      const dup = findDuplicate(
+        { provider: inv.provider, invoice_number: inv.invoice_number, total_cents: inv.total_cents, date: base.date },
+        data.expenses, today);
+      const missingDate = !inv.issue_date && !inv.due_date;
+      onParsed({
+        prefill: { ...base, category_id: cat?.id ?? null },
+        notice: `Leído de la factura de ${inv.providerName}. Revisa los datos antes de guardar.`
+          + (inv.due_date ? ` Vence el ${inv.due_date.split("-").reverse().join("/")}.` : "")
+          + (missingDate ? " No encontré la fecha: puse la de hoy." : "")
+          + (dup?.level === "exact" ? ` ⛔ Esta factura ya está cargada ("${dup.expense.description}", ${dup.expense.date.split("-").reverse().join("/")}). No se puede guardar dos veces.` : "")
+          + (dup?.level === "likely" ? ` ⚠️ Parece la misma que "${dup.expense.description}" del ${dup.expense.date.split("-").reverse().join("/")} (mismo proveedor y monto). Si ya la cargaste, cancela.` : ""),
+      });
+    } catch { setErr("No pude leer ese PDF. ¿Es una factura en PDF con texto (no una foto)?"); }
+    finally { setBusy(false); }
+  }
+  return (
+    <>
+      <label className="btn ghost upload">
+        {busy ? "Leyendo factura…" : "📄 Subir factura (PDF)"}
+        <input type="file" accept="application/pdf" hidden disabled={busy}
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onFile(f); }} />
+      </label>
+      {err && <p className="error">{err}</p>}
+    </>
+  );
+}
+
+function Home({ data, me, onInvoice, onSettle, onEdit, onAll }: {
+  data: AppData; me: User; onInvoice: (f: { prefill: Prefill; notice: string }) => void; onSettle: (s: { from: number; to: number; cents: number }) => void;
   onEdit: (e: Expense) => void; onAll: () => void;
 }) {
   const other = data.users.find((u) => u.id !== me.id);
@@ -72,6 +114,7 @@ function Home({ data, me, onSettle, onEdit, onAll }: {
           </>
         )}
       </section>
+      <InvoiceUpload data={data} onParsed={onInvoice} />
       <h2>Últimos movimientos</h2>
       <ItemList data={data} me={me} items={items} onEdit={onEdit} />
       {items.length > 0 && <button className="btn ghost" onClick={onAll}>Ver todo el historial</button>}
