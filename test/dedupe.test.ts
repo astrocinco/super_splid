@@ -8,6 +8,14 @@ const exp = (p: Partial<Expense>): Expense => ({
 });
 const TODAY = "2026-11-13";
 
+describe("findDuplicate con facturas pendientes (correo)", () => {
+  it("compara también contra filas que no son gastos", () => {
+    const pend = [{ id: 7, invoice_provider: "aysa", invoice_number: "0111B00000002", amount_cents: 3000050, date: "2026-10-20" }];
+    const r = findDuplicate({ provider: "aysa", invoice_number: "0111B00000002", total_cents: 3000050, date: "2026-10-10" }, pend, TODAY);
+    expect(r).toMatchObject({ level: "exact", expense: { id: 7 } });
+  });
+});
+
 describe("findDuplicate", () => {
   it("mismo número de factura = duplicado exacto, sin importar la antigüedad", () => {
     const old = exp({ date: "2025-01-01", invoice_number: "00005-1" });

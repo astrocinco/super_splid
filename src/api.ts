@@ -21,6 +21,7 @@ export const api = {
   saveExpense: (id: number | null, e: unknown) =>
     id ? call("PUT", `/api/expenses/${id}`, e) : call("POST", "/api/expenses", e),
   deleteExpense: (id: number) => call("DELETE", `/api/expenses/${id}`),
+  dismissPending: (id: number) => call("POST", `/api/pending/${id}/dismiss`),
   addSettlement: (s: unknown) => call("POST", "/api/settlements", s),
   deleteSettlement: (id: number) => call("DELETE", `/api/settlements/${id}`),
   addCategory: (name: string, emoji: string) => call("POST", "/api/categories", { name, emoji }),

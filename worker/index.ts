@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { SESSION_DAYS, createSession, readSession, verifyGoogleIdToken } from "./auth";
-import type { AppData, Expense, Settlement, User } from "../shared/types";
+import { findDuplicate } from "../shared/dedupe";
+import { parseInvoiceEmail } from "../shared/emails";
+import type { AppData, Expense, PendingInvoice, Settlement, User } from "../shared/types";
 
 interface Env {
   DB: D1Database;
@@ -9,6 +11,7 @@ interface Env {
   GOOGLE_CLIENT_ID: string;   // secret
   ALLOWED_EMAILS: string;     // secret: "a@gmail.com,b@gmail.com"
   SESSION_SECRET: string;     // secret
+  INGEST_TOKEN?: string;      // secret: clave con la que el script de Gmail envía correos a /api/ingest
   DEV_AUTH?: string;          // solo en .dev.vars: "1" habilita /api/auth/dev
 }
 type Vars = { user: User };
@@ -57,6 +60,53 @@ app.post("/api/auth/dev", async (c) => {
 
 app.post("/api/auth/logout", (c) => { deleteCookie(c, COOKIE, { path: "/" }); return c.json({ ok: true }); });
 
+// ---------- Recepción de correos (la usa el script de la casilla dedicada, no el navegador) ----------
+async function safeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [ha, hb] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(a)), crypto.subtle.digest("SHA-256", enc.encode(b))]);
+  return (crypto.subtle as any).timingSafeEqual(ha, hb);
+}
+
+app.post("/api/ingest", async (c) => {
+  const secret = c.env.INGEST_TOKEN;
+  if (!secret) return c.json({ error: "La recepción de correos no está configurada" }, 503);
+  const given = (c.req.header("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (!(await safeEqual(given, secret))) return c.json({ error: "No autorizado" }, 401);
+
+  const raw = await c.req.text();
+  if (raw.length > 800_000) return c.json({ error: "Correo demasiado grande" }, 413);
+  let b: any;
+  try { b = JSON.parse(raw); } catch { return c.json({ error: "JSON inválido" }, 400); }
+  const str = (v: unknown, max: number) => (typeof v === "string" && v.length <= max ? v : null);
+  const messageId = str(b.message_id, 200), from = str(b.from, 500), subject = str(b.subject, 1000), date = str(b.date, 100), html = str(b.html, 700_000);
+  if (!messageId || from === null || subject === null || !date || html === null || isNaN(Date.parse(date)))
+    return c.json({ error: "Faltan campos del correo" }, 400);
+
+  const r = parseInvoiceEmail({ from, subject, date, html });
+  if (r.kind === "ignored") return c.json({ status: r.unreadable ? "unreadable" : "ignored", reason: r.reason });
+  if (r.kind !== "invoice") return c.json({ status: "no_invoice", kind: r.kind }); // avisos y recordatorios de Edenor: no traen monto
+
+  // ¿Ya la tenemos? Se compara con los gastos y con las facturas pendientes o descartadas.
+  const db = c.env.DB;
+  const [ex, pe] = await db.batch([
+    db.prepare("SELECT invoice_provider, invoice_number, amount_cents, date FROM expenses WHERE invoice_provider = ?").bind(r.provider),
+    db.prepare("SELECT provider AS invoice_provider, invoice_number, total_cents AS amount_cents, issue_date AS date FROM pending_invoices WHERE provider = ?").bind(r.provider),
+  ]);
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Argentina/Buenos_Aires" });
+  const dup = findDuplicate(
+    { provider: r.provider, invoice_number: r.invoice_number, total_cents: r.total_cents, date: r.issue_date },
+    [...(ex.results as any[]), ...(pe.results as any[])], today);
+
+  const res = await db.prepare(
+    `INSERT OR IGNORE INTO pending_invoices
+       (message_id, provider, provider_name, kind_name, total_cents, invoice_number, issue_date, due_date, status, note)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(messageId, r.provider, r.providerName, r.kindName, r.total_cents, r.invoice_number, r.issue_date, r.due_date,
+    dup ? "dismissed" : "pending", dup ? `duplicado (${dup.level})` : null).run();
+  if (!res.meta.changes) return c.json({ status: "already_processed" });
+  return c.json({ status: dup ? "duplicate" : "created", level: dup?.level ?? null });
+});
+
 // ---------- Todo lo demás requiere sesión ----------
 app.use("/api/*", async (c, next) => {
   const uid = await readSession(getCookie(c, COOKIE), c.env.SESSION_SECRET);
@@ -69,12 +119,14 @@ app.use("/api/*", async (c, next) => {
 app.get("/api/me", (c) => c.json(c.get("user")));
 
 async function loadData(db: D1Database): Promise<AppData> {
-  const [users, categories, expenses, splits, settlements] = await db.batch([
+  const [users, categories, expenses, splits, settlements, pending] = await db.batch([
     db.prepare("SELECT id, email, name, picture FROM users ORDER BY id"),
     db.prepare("SELECT * FROM categories ORDER BY name"),
     db.prepare("SELECT * FROM expenses ORDER BY date DESC, id DESC"),
     db.prepare("SELECT * FROM expense_splits"),
     db.prepare("SELECT * FROM settlements ORDER BY date DESC, id DESC"),
+    db.prepare(`SELECT id, provider, provider_name, kind_name, total_cents, invoice_number, issue_date, due_date
+                FROM pending_invoices WHERE status = 'pending' ORDER BY issue_date DESC, id DESC`),
   ]);
   const byExpense = new Map<number, { user_id: number; owed_cents: number }[]>();
   for (const s of splits.results as any[]) {
@@ -86,6 +138,7 @@ async function loadData(db: D1Database): Promise<AppData> {
     categories: categories.results as any,
     expenses: (expenses.results as any[]).map((e) => ({ ...e, splits: byExpense.get(e.id) ?? [] })) as Expense[],
     settlements: settlements.results as unknown as Settlement[],
+    pending: pending.results as unknown as PendingInvoice[],
   };
 }
 
@@ -112,7 +165,7 @@ async function parseExpense(c: any, userIds: Set<number>) {
     ? b.invoice_number.trim().slice(0, 40) : null;
   return {
     value: {
-      invoice_provider: provider, invoice_number: number,
+      invoice_provider: provider, invoice_number: number, pending_id: (Number.isInteger(b.pending_id) ? b.pending_id : null) as number | null,
       date: b.date as string, description: (b.description as string).trim().slice(0, 200),
       amount_cents: b.amount_cents as number, category_id: (b.category_id ?? null) as number | null,
       payer_id: b.payer_id as number, splits: splits as { user_id: number; owed_cents: number }[],
@@ -150,6 +203,10 @@ app.post("/api/expenses", async (c) => {
   if ("error" in r) return c.json({ error: r.error }, 400);
   try {
     const id = await writeExpense(c.env.DB, null, c.get("user").id, r.value);
+    if (Number.isInteger(r.value.pending_id)) {
+      await c.env.DB.prepare("UPDATE pending_invoices SET status = 'accepted', expense_id = ? WHERE id = ? AND status = 'pending'")
+        .bind(id, r.value.pending_id).run();
+    }
     return c.json({ id }, 201);
   } catch (e) {
     if (String(e).includes("UNIQUE")) return c.json({ error: "Esta factura ya fue cargada antes (mismo proveedor y número)." }, 409);
@@ -168,6 +225,12 @@ app.put("/api/expenses/:id", async (c) => {
 
 app.delete("/api/expenses/:id", async (c) => {
   await c.env.DB.prepare("DELETE FROM expenses WHERE id = ?").bind(Number(c.req.param("id"))).run();
+  return c.json({ ok: true });
+});
+
+app.post("/api/pending/:id/dismiss", async (c) => {
+  await c.env.DB.prepare("UPDATE pending_invoices SET status = 'dismissed', note = 'descartada a mano' WHERE id = ? AND status = 'pending'")
+    .bind(Number(c.req.param("id"))).run();
   return c.json({ ok: true });
 });
 

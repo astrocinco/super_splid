@@ -23,9 +23,20 @@ describe("parseInvoiceEmail", () => {
     expect(parseInvoiceEmail(edenorNotice)).toEqual({ kind: "notice", provider: "edenor", due_date: "2026-11-24", account: "1234567" }));
   it("Edenor: el recordatorio de vencimiento se descarta (el segundo correo)", () =>
     expect(parseInvoiceEmail(edenorReminder)).toEqual({ kind: "reminder", provider: "edenor" }));
-  it("remitente desconocido o formato roto -> ignorado", () => {
-    expect(parseInvoiceEmail({ ...metrogas, from: "x@spam.com" })).toMatchObject({ kind: "ignored" });
-    expect(parseInvoiceEmail({ ...metrogas, html: "<p>sin datos</p>" })).toMatchObject({ kind: "ignored" });
+  it("remitente desconocido -> ignorado, sin marcar como ilegible", () => {
+    expect(parseInvoiceEmail({ ...metrogas, from: "x@spam.com", html: "<p>hola</p>" })).toMatchObject({ kind: "ignored", unreadable: false });
+  });
+  it("proveedor conocido pero formato roto -> ilegible (hay que revisarlo)", () => {
+    expect(parseInvoiceEmail({ ...metrogas, html: "<p>metrogas.com.ar sin datos</p>" })).toMatchObject({ kind: "ignored", unreadable: true });
+  });
+  it("reenvío manual: el remitente es el usuario, el proveedor se deduce del contenido", () => {
+    const fwd = { ...aysa, from: "Yo <yo@gmail.com>", subject: "Fwd: Aviso de Factura Digital Disponible",
+      html: "<div>---------- Forwarded message ---------<br>De: AySA Digital &lt;avisos@aysadigital.com.ar&gt;</div><blockquote>" + aysa.html + "</blockquote>" };
+    expect(parseInvoiceEmail(fwd)).toMatchObject({ kind: "invoice", provider: "aysa", total_cents: 3000050, invoice_number: "0111B00000002" });
+  });
+  it("reenvío manual del recordatorio de Edenor tampoco crea nada", () => {
+    expect(parseInvoiceEmail({ ...edenorReminder, from: "Yo <yo@gmail.com>", subject: "Fwd: Vencimiento de tu factura",
+      html: "<p>De: notificaciones@edenor.com</p>" + edenorReminder.html })).toEqual({ kind: "reminder", provider: "edenor" });
   });
 });
 

@@ -1,4 +1,4 @@
-import type { Expense } from "./types";
+
 
 export interface InvoiceKey {
   provider: string;
@@ -6,7 +6,9 @@ export interface InvoiceKey {
   total_cents: number;
   date: string; // YYYY-MM-DD (emisión, o fecha del correo)
 }
-export interface Duplicate { level: "exact" | "likely"; expense: Expense }
+/** Lo mínimo que hace falta de un gasto (o de una factura pendiente) para compararlo. */
+export interface DupRow { invoice_provider?: string | null; invoice_number?: string | null; amount_cents: number; date: string }
+export interface Duplicate<T extends DupRow> { level: "exact" | "likely"; expense: T }
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / DAY;
@@ -19,10 +21,10 @@ const daysBetween = (a: string, b: string) => Math.abs(Date.parse(a) - Date.pars
  *           dos números distintos son facturas distintas aunque tengan el mismo monto
  *           (p. ej. el abono fijo de internet de dos meses seguidos).
  */
-export function findDuplicate(
-  c: InvoiceKey, existing: Expense[], today: string, windowDays = 120, nearDays = 20,
-): Duplicate | null {
-  let likely: Duplicate | null = null;
+export function findDuplicate<T extends DupRow>(
+  c: InvoiceKey, existing: T[], today: string, windowDays = 120, nearDays = 20,
+): Duplicate<T> | null {
+  let likely: Duplicate<T> | null = null;
   for (const e of existing) {
     if (e.invoice_provider !== c.provider) continue;
     if (c.invoice_number && e.invoice_number) {

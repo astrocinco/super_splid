@@ -31,6 +31,11 @@ npm install && npm run db:migrate:local && npm run dev   # http://localhost:8787
 Requiere un `.dev.vars` con `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `SESSION_SECRET` y `DEV_AUTH=1` (login de desarrollo; nunca en producción).
 Tests: `npm test` · Tipos: `npm run typecheck`.
 
+## Facturas
+- **Subir PDF:** botón en el inicio; se lee en el navegador y precarga el gasto (MetroGAS, Edenor, AySA, IPLAN).
+- **Por correo:** casilla dedicada + script de Gmail + bandeja "Facturas por confirmar". Guía: [`docs/correo-facturas.md`](docs/correo-facturas.md).
+- **Duplicados:** por número de factura (exacto) o por proveedor + monto + fecha cercana en 4 meses (probable).
+
 ## Modelo de datos
 Montos en centavos (enteros). `expenses` + `expense_splits` (cuánto consume cada uno) + `settlements` (devoluciones).
 Saldo = pagado − consumido ± devoluciones; se calcula, no se guarda (`shared/balance.ts`).

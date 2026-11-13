@@ -10,6 +10,10 @@ export interface Settlement {
   id: number; date: string; from_user: number; to_user: number;
   amount_cents: number; note: string | null; created_by: number;
 }
+export interface PendingInvoice {
+  id: number; provider: string; provider_name: string; kind_name: string; total_cents: number;
+  invoice_number: string | null; issue_date: string; due_date: string | null;
+}
 export interface AppData {
-  users: User[]; categories: Category[]; expenses: Expense[]; settlements: Settlement[];
+  users: User[]; categories: Category[]; expenses: Expense[]; settlements: Settlement[]; pending: PendingInvoice[];
 }

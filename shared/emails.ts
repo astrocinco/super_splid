@@ -8,7 +8,7 @@ export type EmailResult =
       invoice_number: string | null; issue_date: string; due_date: string | null }
   | { kind: "notice"; provider: ProviderId; due_date: string | null; account: string | null }   // aviso sin monto
   | { kind: "reminder"; provider: ProviderId }                                                  // recordatorio de vencimiento
-  | { kind: "ignored"; reason: string };
+  | { kind: "ignored"; reason: string; unreadable: boolean };   // unreadable: conozco al proveedor pero no pude leer el monto
 
 const NAMED: Record<string, string> = {
   nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', iexcl: "¡", iquest: "¿", deg: "°", ordm: "º",
@@ -35,16 +35,36 @@ const D = "(\\d{2}/\\d{2}/\\d{4})";
 const N = "([\\d.,]*\\d)";
 const rx = (s: string, f = "i") => new RegExp(s, f);
 
+const SENDERS: { id: ProviderId; domains: RegExp }[] = [
+  { id: "metrogas", domains: /metrogas\.com\.ar/gi },
+  { id: "aysa", domains: /aysadigital\.com\.ar|aysa\.com\.ar/gi },
+  { id: "iplan", domains: /iplan\.com\.ar/gi },
+  { id: "edenor", domains: /edenor\.com/gi },
+];
+
+/** El remitente real; si el correo fue reenviado a mano, se deduce de los dominios que aparecen en el texto. */
+function detectProvider(from: string, text: string): ProviderId | null {
+  for (const s of SENDERS) if (new RegExp(s.domains.source, "i").test(from)) return s.id;
+  let best: { id: ProviderId; hits: number } | null = null;
+  for (const s of SENDERS) {
+    const hits = (text.match(s.domains) ?? []).length;
+    if (hits > 0 && (!best || hits > best.hits)) best = { id: s.id, hits };
+  }
+  return best?.id ?? null;
+}
+
+const unreadable = (name: string): EmailResult => ({ kind: "ignored", reason: `${name}: no encontré el monto en el correo`, unreadable: true });
+
 export function parseInvoiceEmail(mail: EmailInput): EmailResult {
-  const from = mail.from.toLowerCase();
   const text = htmlToText(mail.html);
+  const provider = detectProvider(mail.from, text);
   const sent = emailDate(mail.date);
   const total = (s?: string) => (s ? parseAmount(s) : null);
 
-  if (from.includes("metrogas.com.ar")) {
+  if (provider === "metrogas") {
     const m = rx(`D[eé]bito Autom[aá]tico:\\s*(?:SI|NO)\\s*\\$\\s*${N}\\s*${D}`).exec(text);
     const cents = total(m?.[1]);
-    if (!m || !cents) return { kind: "ignored", reason: "MetroGAS: no encontré el monto en el correo" };
+    if (!m || !cents) return unreadable("MetroGAS");
     return {
       kind: "invoice", provider: "metrogas", providerName: "MetroGAS", kindName: "gas", total_cents: cents,
       invoice_number: null,
@@ -53,27 +73,27 @@ export function parseInvoiceEmail(mail: EmailInput): EmailResult {
     };
   }
 
-  if (from.includes("aysa")) {
+  if (provider === "aysa") {
     const m = rx(`(\\d{4}[A-Z]\\d{8,})[^$]{0,160}\\$\\s*${N}\\s*${D}`, "").exec(text);
     const cents = total(m?.[2]);
-    if (!m || !cents) return { kind: "ignored", reason: "AySA: no encontré el monto en el correo" };
+    if (!m || !cents) return unreadable("AySA");
     return {
       kind: "invoice", provider: "aysa", providerName: "AySA", kindName: "agua", total_cents: cents,
       invoice_number: m[1], issue_date: sent, due_date: toIsoDate(m[3]),
     };
   }
 
-  if (from.includes("iplan.com.ar")) {
+  if (provider === "iplan") {
     const m = rx(`valor de tus servicios[^$]{0,40}\\$\\s*${N}\\s*y su 1er vencimiento es el\\s*${D}`).exec(text);
     const cents = total(m?.[1]);
-    if (!m || !cents) return { kind: "ignored", reason: "IPLAN: no encontré el monto en el correo" };
+    if (!m || !cents) return unreadable("IPLAN");
     return {
       kind: "invoice", provider: "iplan", providerName: "IPLAN", kindName: "internet", total_cents: cents,
       invoice_number: null, issue_date: sent, due_date: toIsoDate(m[2]),
     };
   }
 
-  if (from.includes("edenor.com")) {
+  if (provider === "edenor") {
     // Edenor nunca manda el monto ni el PDF: solo avisos. El gasto se crea subiendo el PDF.
     if (/Vencimiento de tu factura/i.test(mail.subject) || /vence tu factura/i.test(text)) {
       return { kind: "reminder", provider: "edenor" };
@@ -85,5 +105,5 @@ export function parseInvoiceEmail(mail: EmailInput): EmailResult {
     };
   }
 
-  return { kind: "ignored", reason: "Remitente desconocido" };
+  return { kind: "ignored", reason: "Remitente desconocido", unreadable: false };
 }

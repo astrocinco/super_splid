@@ -50,3 +50,6 @@ details.card { margin-top: 16px; } summary { cursor: pointer; color: var(--muted
 .actions .grow { flex: 1; }
 .notice { background: color-mix(in srgb, var(--brand) 14%, transparent); border-radius: 10px; padding: 10px 12px; font-size: .9rem; margin: 0 0 12px; }
 .upload { display: block; text-align: center; margin-top: 12px; }
+.pend { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; }
+.pend .acts { display: flex; gap: 8px; justify-content: flex-end; }
+.pend small { color: var(--muted); }

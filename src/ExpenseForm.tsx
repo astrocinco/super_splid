@@ -21,8 +21,8 @@ export interface Prefill {
   invoice_provider?: string | null; invoice_number?: string | null;
 }
 
-export default function ExpenseForm({ data, me, expense, prefill, notice, onClose, onSaved }: {
-  data: AppData; me: User; expense?: Expense; prefill?: Prefill; notice?: string; onClose: () => void; onSaved: () => void;
+export default function ExpenseForm({ data, me, expense, prefill, notice, pendingId, onClose, onSaved }: {
+  data: AppData; me: User; expense?: Expense; prefill?: Prefill; notice?: string; pendingId?: number; onClose: () => void; onSaved: () => void;
 }) {
   const [payerId, setPayerId] = useState(expense?.payer_id ?? me.id);
   const other = data.users.find((u) => u.id !== payerId)!;
@@ -55,6 +55,7 @@ export default function ExpenseForm({ data, me, expense, prefill, notice, onClos
         date, description: desc, amount_cents: cents, category_id: cat === "" ? null : cat,
         payer_id: payerId, splits: splitTwoWays(cents, payerId, other.id, otherPct),
         ...(!expense && prefill ? { invoice_provider: prefill.invoice_provider, invoice_number: prefill.invoice_number } : {}),
+        ...(!expense && pendingId ? { pending_id: pendingId } : {}),
       });
       onSaved();
     } catch (e: any) { setErr(e.message); setBusy(false); }
